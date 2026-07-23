@@ -139,8 +139,9 @@ function Audit({ schoolId, passcode, onLogout }) {
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
       setStatus(`Analyzing Unit ${item.unit} (${i + 1}/${batch.length})...`);
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
       try {
-        const response = await axios.post('http://127.0.0.1:8000/api/audit', {
+        const response = await axios.post(`${backendUrl}/api/audit`, {
           school_id: schoolId,
           passcode: passcode,
           unit: parseInt(item.unit),

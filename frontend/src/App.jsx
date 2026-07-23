@@ -14,6 +14,8 @@ function App() {
   const [schoolName, setSchoolName] = useState("");
   const [pincode, setPincode] = useState("");
 
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+
   const handleLogout = () => {
     setIsAuthenticated(false);
     setSchoolId("");
@@ -26,7 +28,7 @@ function App() {
     setMessage({ text: "", type: "" });
 
     try {
-      await axios.post('http://127.0.0.1:8000/api/verify', {
+      await axios.post(`${backendUrl}/api/verify`, {
         school_id: schoolId,
         passcode: passcode
       });
@@ -54,7 +56,7 @@ function App() {
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         try {
-          const response = await axios.post('http://127.0.0.1:8000/api/register', {
+          const response = await axios.post('${backendUrl}/api/register', {
             school_name: schoolName,
             pincode: pincode,
             lat: position.coords.latitude,
