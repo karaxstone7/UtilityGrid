@@ -1,11 +1,12 @@
 import base64
 import random
+import os
+import json
+import traceback  # <-- Added missing import to prevent crashes
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import os
-import json
 from dotenv import load_dotenv
 import core 
 
