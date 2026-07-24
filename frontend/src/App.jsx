@@ -22,6 +22,20 @@ function App() {
     setPasscode("");
   };
 
+  const extractErrorMsg = (error, defaultMsg) => {
+      const detail = error.response?.data?.detail;
+      if (!detail) return defaultMsg;
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) {
+        // This will extract the EXACT field name FastAPI is looking for
+        return detail.map(err => {
+          const fieldName = err.loc && err.loc.length > 1 ? err.loc[1] : 'Unknown field';
+          return `'${fieldName}' is required by your backend.`;
+        }).join(' | ');
+      }
+      return defaultMsg;
+    };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -35,7 +49,7 @@ function App() {
       setIsAuthenticated(true);
     } catch (error) {
       setMessage({ 
-        text: error.response?.data?.detail || "Login failed. Check your ID and Passcode.", 
+        text: extractErrorMsg(error, "Login failed. Check your ID and Passcode."), 
         type: "error" 
       });
     }
@@ -56,9 +70,8 @@ function App() {
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         try {
-          // FIX: Changed single quotes to backticks, and school_name to name
           const response = await axios.post(`${backendUrl}/api/register`, {
-            name: schoolName, 
+            school_name: schoolName, 
             pincode: pincode,
             lat: position.coords.latitude,
             lng: position.coords.longitude
@@ -71,7 +84,7 @@ function App() {
           setPincode("");
         } catch (error) {
           setMessage({ 
-            text: error.response?.data?.detail || "Registration failed. Check your Pincode.", 
+            text: extractErrorMsg(error, "Registration failed. Check your Pincode."), 
             type: "error" 
           });
         }
@@ -84,12 +97,10 @@ function App() {
     );
   };
 
-  // IF LOGGED IN: Show the Audit Interface with Logout passed as a prop
   if (isAuthenticated) {
     return <Audit schoolId={schoolId} passcode={passcode} onLogout={handleLogout} />;
   }
 
-  // IF NOT LOGGED IN: Show Auth Interface (Rest of your existing App.jsx UI)
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
@@ -142,7 +153,7 @@ function App() {
                 <input 
                   type="text" required 
                   className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-blue-500 focus:border-blue-500"
-                  value={schoolName} onChange={(e) => setSchoolName(e.target.value)}
+                  value={schoolName} onChange={(e) => setSchoolName(e.target.value.toUpperCase())}
                 />
               </div>
               <div>

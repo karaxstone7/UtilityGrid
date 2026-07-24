@@ -9,15 +9,16 @@ function Audit({ schoolId, passcode, onLogout }) {
   const streamRef = useRef(null); 
   const isCameraIntended = useRef(false); 
   
-  // Audio Visualizer Refs
+  
   const audioCanvasRef = useRef(null);
   const audioCtxRef = useRef(null);
   const animationRef = useRef(null);
+  const audioStreamRef = useRef(null); // Add this new ref to track the mic hardware
   
   const [mode, setMode] = useState('capture');
   
   const [photoData, setPhotoData] = useState(null);
-  const [unit, setUnit] = useState(1);
+  const [unit, setUnit] = useState("1");
   const [location, setLocation] = useState(null);
   const [remarks, setRemarks] = useState("");
   const [status, setStatus] = useState("Initializing sensors...");
@@ -28,6 +29,8 @@ function Audit({ schoolId, passcode, onLogout }) {
   const [batch, setBatch] = useState([]);
   const [reports, setReports] = useState([]);
   const [lang, setLang] = useState('en'); 
+  
+  const MAX_UNITS = 10;
 
   const startCamera = () => {
     isCameraIntended.current = true;
@@ -42,6 +45,11 @@ function Audit({ schoolId, passcode, onLogout }) {
         if (!isCameraIntended.current) {
            mediaStream.getTracks().forEach(track => track.stop());
            return;
+        }
+        
+        // --- THE FIX: Kill any ghost streams that resolved while we were waiting ---
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
         }
         
         streamRef.current = mediaStream;
@@ -64,7 +72,21 @@ function Audit({ schoolId, passcode, onLogout }) {
       }
     }
   };
+  const pauseCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getVideoTracks().forEach(track => {
+        track.enabled = false; // Pauses the stream, outputs black frames
+      });
+    }
+  };
 
+  const resumeCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getVideoTracks().forEach(track => {
+        track.enabled = true; // Instantly resumes the stream
+      });
+    }
+  };
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -80,11 +102,9 @@ function Audit({ schoolId, passcode, onLogout }) {
     };
   }, []);
 
-  // --- NEW KILL SWITCH FOR GHOST RECORDINGS ---
   const stopAnyActiveAudio = () => {
     if (isRecording) {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        // Remove onstop so it doesn't accidentally attach late audio to the NEXT photo
         mediaRecorderRef.current.onstop = null; 
         mediaRecorderRef.current.stop();
       }
@@ -93,6 +113,12 @@ function Audit({ schoolId, passcode, onLogout }) {
         audioCtxRef.current.close();
       }
       setIsRecording(false);
+    }
+    
+    // --- THE FIX: Force kill the microphone track directly ---
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(track => track.stop());
+      audioStreamRef.current = null;
     }
   };
 
@@ -147,6 +173,7 @@ function Audit({ schoolId, passcode, onLogout }) {
     } else {
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioStreamRef.current = audioStream; // Add this line
         const recorder = new MediaRecorder(audioStream);
         const chunks = [];
         
@@ -195,21 +222,29 @@ function Audit({ schoolId, passcode, onLogout }) {
     canvas.getContext('2d').drawImage(video, 0, 0);
     setPhotoData(canvas.toDataURL('image/png'));
     
-    stopCamera();
+    // stopCamera();
+    pauseCamera();
   };
 
   const addToBatch = () => {
-    // FIX: Safely kill any audio operations before resetting state
     stopAnyActiveAudio();
 
-    setBatch([...batch, { unit, photoData, remarks, audioBase64 }]);
+    const newBatch = [...batch, { unit, photoData, remarks, audioBase64 }];
+    setBatch(newBatch);
     setPhotoData(null);
     setRemarks("");
     setAudioBase64(null);
-    setUnit(prev => (parseInt(prev) + 1).toString()); 
-    setStatus(`Unit saved to batch. Ready for next unit.`);
     
-    startCamera();
+    if (newBatch.length >= MAX_UNITS) {
+      setStatus("Batch full. Maximum of 10 units reached.");
+      stopCamera(); 
+    } else {
+      const nextUnit = parseInt(unit) + 1;
+      setUnit(nextUnit <= MAX_UNITS ? nextUnit.toString() : MAX_UNITS.toString()); 
+      setStatus(`Unit saved to batch. Ready for next unit.`);
+      // startCamera();
+      resumeCamera();
+    }
   };
 
   const submitBatch = async () => {
@@ -247,6 +282,7 @@ function Audit({ schoolId, passcode, onLogout }) {
     stopAnyActiveAudio();
     setBatch([]);
     setReports([]);
+    setUnit("1");
     setMode('capture');
     startCamera();
   };
@@ -267,7 +303,7 @@ function Audit({ schoolId, passcode, onLogout }) {
                 {l}
               </button>
             ))}
-            <button onClick={onLogout} className="px-3 py-1 rounded font-bold bg-red-100 text-red-700 hover:bg-red-200 ml-4 transition">
+            <button onClick={() => { stopCamera(); stopAnyActiveAudio(); onLogout(); }} className="px-3 py-1 rounded font-bold bg-red-100 text-red-700 hover:bg-red-200 ml-4 transition">
               Logout
             </button>
           </div>
@@ -370,108 +406,128 @@ function Audit({ schoolId, passcode, onLogout }) {
       <div className="flex justify-between items-center border-b pb-3">
         <h2 className="text-xl font-bold text-gray-800">Field Audit</h2>
         <div className="flex space-x-3 items-center">
-          <span className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded font-bold">Cart: {batch.length} Units</span>
-          <button onClick={onLogout} className="text-sm font-bold text-red-600 hover:text-red-800 transition">Logout</button>
+          <span className={`text-xs px-2 py-1 rounded font-bold ${batch.length >= MAX_UNITS ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
+            Cart: {batch.length}/{MAX_UNITS}
+          </span>
+          <button onClick={() => { stopCamera(); stopAnyActiveAudio(); onLogout(); }} className="text-sm font-bold text-red-600 hover:text-red-800 transition">Logout</button>
         </div>
       </div>
       
       <p className="text-sm font-medium text-blue-600">{status}</p>
 
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Washroom Unit Number</label>
-        <select 
-          className="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500" 
-          value={unit} 
-          onChange={(e) => setUnit(e.target.value)}
-        >
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(num => <option key={num} value={num}>Unit {num}</option>)}
-        </select>
-      </div>
-
-      <div className="border-4 border-gray-200 rounded-lg overflow-hidden bg-black relative shadow-inner">
-        <video ref={videoRef} autoPlay playsInline muted className={`w-full h-64 object-cover ${photoData ? 'hidden' : 'block'}`} />
-        {photoData && <img src={photoData} alt="Captured" className="w-full h-64 object-cover block" />}
-      </div>
-      
-      <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
-
-      {photoData && (
-        <div className="space-y-3 animate-fade-in">
-          <textarea 
-            placeholder="Type any field remarks here..." 
-            className="w-full p-3 border border-gray-300 rounded-md text-sm shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-            rows="2"
-            value={remarks} 
-            onChange={(e) => setRemarks(e.target.value)}
-          />
-          
-          <div className="flex flex-col space-y-2 bg-gray-50 p-3 rounded-md border border-gray-200 shadow-sm">
-             <div className="flex items-center space-x-3">
-               <button 
-                  onClick={handleAudioRecord} 
-                  className={`p-3 rounded-full flex-shrink-0 transition-colors ${isRecording ? 'bg-red-500 text-white animate-pulse shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-               >
-                  🎤
-               </button>
-               <div className="text-sm font-medium text-gray-600 flex-1">
-                  {isRecording ? "Recording audio note..." : audioBase64 ? "Audio note attached." : "Tap to record a voice note."}
-               </div>
-               {audioBase64 && !isRecording && (
-                  <button onClick={() => setAudioBase64(null)} className="text-red-500 text-sm font-bold bg-red-50 px-2 py-1 rounded hover:bg-red-100 transition">Remove</button>
-               )}
-             </div>
-             
-             <canvas 
-               ref={audioCanvasRef} 
-               width="300" 
-               height="40" 
-               className={`w-full rounded border border-gray-200 bg-gray-100 shadow-inner ${isRecording ? 'block' : 'hidden'}`}
-             ></canvas>
+      {/* CONDITIONAL RENDER: If Batch is full, show analyze screen instead of camera */}
+      {batch.length >= MAX_UNITS ? (
+        <div className="py-12 space-y-6 text-center animate-fade-in">
+          <div className="text-6xl">✅</div>
+          <div>
+            <h3 className="text-xl font-bold text-gray-800">Batch Full</h3>
+            <p className="text-sm text-gray-600 mt-2">You have captured the maximum of 10 units for this session.</p>
           </div>
-        </div>
-      )}
-
-      {!photoData ? (
-        <div className="space-y-3 pt-2">
           <button 
-            onClick={takePhoto} 
-            disabled={!location} 
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold disabled:opacity-50 transition shadow-md"
+            onClick={submitBatch} 
+            className="w-full bg-green-600 hover:bg-green-700 text-white py-4 rounded-lg font-bold text-lg transition shadow-xl"
           >
-            Capture Photo
+            Analyze 10 Saved Units
           </button>
-          
-          {batch.length > 0 && (
-            <button 
-              onClick={submitBatch} 
-              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-bold transition shadow-md"
-            >
-              Analyze {batch.length} Saved Units
-            </button>
-          )}
         </div>
       ) : (
-        <div className="flex space-x-3 pt-2">
-          <button 
-            onClick={() => { 
-              // FIX: Safely kill audio operations when choosing to retake
-              stopAnyActiveAudio();
-              setPhotoData(null); 
-              setAudioBase64(null); 
-              startCamera(); 
-            }} 
-            className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-lg font-bold transition shadow-md"
-          >
-            Retake
-          </button>
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Washroom Unit Number</label>
+            <select 
+              className="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500" 
+              value={unit} 
+              onChange={(e) => setUnit(e.target.value)}
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(num => <option key={num} value={num}>Unit {num}</option>)}
+            </select>
+          </div>
+
+          <div className="border-4 border-gray-200 rounded-lg overflow-hidden bg-black relative shadow-inner">
+            <video ref={videoRef} autoPlay playsInline muted className={`w-full h-64 object-cover ${photoData ? 'hidden' : 'block'}`} />
+            {photoData && <img src={photoData} alt="Captured" className="w-full h-64 object-cover block" />}
+          </div>
           
-          <button 
-            onClick={addToBatch} 
-            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold transition shadow-md"
-          >
-            Save to Batch
-          </button>
-        </div>
+          <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
+
+          {photoData && (
+            <div className="space-y-3 animate-fade-in">
+              <textarea 
+                placeholder="Type any field remarks here..." 
+                className="w-full p-3 border border-gray-300 rounded-md text-sm shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                rows="2"
+                value={remarks} 
+                onChange={(e) => setRemarks(e.target.value)}
+              />
+              
+              <div className="flex flex-col space-y-2 bg-gray-50 p-3 rounded-md border border-gray-200 shadow-sm">
+                 <div className="flex items-center space-x-3">
+                   <button 
+                      onClick={handleAudioRecord} 
+                      className={`p-3 rounded-full flex-shrink-0 transition-colors ${isRecording ? 'bg-red-500 text-white animate-pulse shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                   >
+                      🎤
+                   </button>
+                   <div className="text-sm font-medium text-gray-600 flex-1">
+                      {isRecording ? "Recording audio note..." : audioBase64 ? "Audio note attached." : "Tap to record a voice note."}
+                   </div>
+                   {audioBase64 && !isRecording && (
+                      <button onClick={() => setAudioBase64(null)} className="text-red-500 text-sm font-bold bg-red-50 px-2 py-1 rounded hover:bg-red-100 transition">Remove</button>
+                   )}
+                 </div>
+                 
+                 <canvas 
+                   ref={audioCanvasRef} 
+                   width="300" 
+                   height="40" 
+                   className={`w-full rounded border border-gray-200 bg-gray-100 shadow-inner ${isRecording ? 'block' : 'hidden'}`}
+                 ></canvas>
+              </div>
+            </div>
+          )}
+
+          {!photoData ? (
+            <div className="space-y-3 pt-2">
+              <button 
+                onClick={takePhoto} 
+                disabled={!location} 
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold disabled:opacity-50 transition shadow-md"
+              >
+                Capture Photo
+              </button>
+              
+              {batch.length > 0 && (
+                <button 
+                  onClick={submitBatch} 
+                  className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-bold transition shadow-md"
+                >
+                  Analyze {batch.length} Saved Units
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex space-x-3 pt-2">
+              <button 
+                onClick={() => { 
+                  stopAnyActiveAudio();
+                  setPhotoData(null); 
+                  setAudioBase64(null); 
+                  resumeCamera(); 
+                }} 
+                className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-lg font-bold transition shadow-md"
+              >
+                Retake
+              </button>
+              
+              <button 
+                onClick={addToBatch} 
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold transition shadow-md"
+              >
+                Save to Batch
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
