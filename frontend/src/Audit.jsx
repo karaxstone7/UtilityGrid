@@ -7,24 +7,24 @@ function Audit({ schoolId, passcode, onLogout }) {
   const mediaRecorderRef = useRef(null);
   
   const streamRef = useRef(null); 
-  // FIX: This ref prevents the camera from turning on if a pending request resolves during processing
   const isCameraIntended = useRef(false); 
   
-  // App Modes: 'capture' -> 'analyzing' -> 'reports'
+  // Audio Visualizer Refs
+  const audioCanvasRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const animationRef = useRef(null);
+  
   const [mode, setMode] = useState('capture');
   
-  // Capture States
   const [photoData, setPhotoData] = useState(null);
   const [unit, setUnit] = useState(1);
   const [location, setLocation] = useState(null);
   const [remarks, setRemarks] = useState("");
   const [status, setStatus] = useState("Initializing sensors...");
   
-  // Audio States
   const [isRecording, setIsRecording] = useState(false);
   const [audioBase64, setAudioBase64] = useState(null);
   
-  // Batch Queue & Reports
   const [batch, setBatch] = useState([]);
   const [reports, setReports] = useState([]);
   const [lang, setLang] = useState('en'); 
@@ -32,15 +32,13 @@ function Audit({ schoolId, passcode, onLogout }) {
   const startCamera = () => {
     isCameraIntended.current = true;
     
-    // Ensure existing tracks are completely dead before requesting new ones
     if (streamRef.current) {
         stopCamera(); 
-        isCameraIntended.current = true; // reset to true since stopCamera sets it to false
+        isCameraIntended.current = true; 
     }
 
     navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true })
       .then((mediaStream) => {
-        // RACE CONDITION FIX: If the user hit "Analyze" before this stream resolved, instantly kill it.
         if (!isCameraIntended.current) {
            mediaStream.getTracks().forEach(track => track.stop());
            return;
@@ -59,7 +57,6 @@ function Audit({ schoolId, passcode, onLogout }) {
     isCameraIntended.current = false;
     
     if (streamRef.current) {
-      // Force hardware tracks to stop immediately
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
       if (videoRef.current) {
@@ -77,28 +74,114 @@ function Audit({ schoolId, passcode, onLogout }) {
     }
     startCamera();
     
-    // Absolute cleanup on component unmount
-    return () => stopCamera(); 
+    return () => {
+      stopCamera();
+      stopAnyActiveAudio();
+    };
   }, []);
 
-  const handleAudioRecord = () => {
+  // --- NEW KILL SWITCH FOR GHOST RECORDINGS ---
+  const stopAnyActiveAudio = () => {
+    if (isRecording) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        // Remove onstop so it doesn't accidentally attach late audio to the NEXT photo
+        mediaRecorderRef.current.onstop = null; 
+        mediaRecorderRef.current.stop();
+      }
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        audioCtxRef.current.close();
+      }
+      setIsRecording(false);
+    }
+  };
+
+  const drawVisualizer = (analyser, dataArray, bufferLength) => {
+    const canvas = audioCanvasRef.current;
+    if (!canvas) return;
+    const canvasCtx = canvas.getContext('2d');
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    const draw = () => {
+      animationRef.current = requestAnimationFrame(draw);
+      analyser.getByteTimeDomainData(dataArray);
+
+      canvasCtx.fillStyle = '#f9fafb';
+      canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      canvasCtx.lineWidth = 2;
+      canvasCtx.strokeStyle = '#3b82f6';
+      canvasCtx.beginPath();
+
+      const sliceWidth = WIDTH * 1.0 / bufferLength;
+      let x = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = v * HEIGHT / 2;
+
+        if (i === 0) {
+          canvasCtx.moveTo(x, y);
+        } else {
+          canvasCtx.lineTo(x, y);
+        }
+        x += sliceWidth;
+      }
+      canvasCtx.lineTo(canvas.width, canvas.height / 2);
+      canvasCtx.stroke();
+    };
+    
+    draw();
+  };
+
+  const handleAudioRecord = async () => {
     if (isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
+      
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        audioCtxRef.current.close();
+      }
     } else {
-      if (!streamRef.current) return;
-      const recorder = new MediaRecorder(streamRef.current);
-      const chunks = [];
-      recorder.ondataavailable = e => chunks.push(e.data);
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        const reader = new FileReader();
-        reader.readAsDataURL(blob);
-        reader.onloadend = () => setAudioBase64(reader.result);
-      };
-      recorder.start();
-      mediaRecorderRef.current = recorder;
-      setIsRecording(true);
+      try {
+        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(audioStream);
+        const chunks = [];
+        
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtxRef.current = audioCtx;
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        
+        const source = audioCtx.createMediaStreamSource(audioStream);
+        source.connect(analyser);
+        
+        if (audioCanvasRef.current) {
+          drawVisualizer(analyser, dataArray, bufferLength);
+        }
+
+        recorder.ondataavailable = e => chunks.push(e.data);
+        
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => setAudioBase64(reader.result);
+          
+          audioStream.getTracks().forEach(track => track.stop());
+        };
+        
+        recorder.start();
+        mediaRecorderRef.current = recorder;
+        setIsRecording(true);
+      } catch (err) {
+        console.error("Mic access failed:", err);
+        alert("Could not access the microphone. Please check your browser permissions.");
+      }
     }
   };
 
@@ -112,11 +195,13 @@ function Audit({ schoolId, passcode, onLogout }) {
     canvas.getContext('2d').drawImage(video, 0, 0);
     setPhotoData(canvas.toDataURL('image/png'));
     
-    // SHUTDOWN: Turns hardware off immediately after capture
     stopCamera();
   };
 
   const addToBatch = () => {
+    // FIX: Safely kill any audio operations before resetting state
+    stopAnyActiveAudio();
+
     setBatch([...batch, { unit, photoData, remarks, audioBase64 }]);
     setPhotoData(null);
     setRemarks("");
@@ -124,14 +209,11 @@ function Audit({ schoolId, passcode, onLogout }) {
     setUnit(prev => (parseInt(prev) + 1).toString()); 
     setStatus(`Unit saved to batch. Ready for next unit.`);
     
-    // Restart camera for the next unit in the batch
     startCamera();
   };
 
   const submitBatch = async () => {
-    // 1. Immediately trigger the absolute hardware shutdown
     stopCamera(); 
-    // 2. Change UI mode
     setMode('analyzing');
     
     const processedReports = [];
@@ -162,13 +244,13 @@ function Audit({ schoolId, passcode, onLogout }) {
   };
 
   const startNewSession = () => {
+    stopAnyActiveAudio();
     setBatch([]);
     setReports([]);
     setMode('capture');
     startCamera();
   };
 
-  // --- REPORT VIEW ---
   if (mode === 'reports') {
     return (
       <div className="p-6 max-w-4xl mx-auto space-y-8">
@@ -273,7 +355,6 @@ function Audit({ schoolId, passcode, onLogout }) {
     );
   }
 
-  // --- LOADING/ANALYZING VIEW ---
   if (mode === 'analyzing') {
     return (
       <div className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md text-center py-20">
@@ -283,7 +364,6 @@ function Audit({ schoolId, passcode, onLogout }) {
     );
   }
 
-  // --- CAPTURE VIEW (Batch Queue UI) ---
   return (
     <div className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md space-y-4 mt-6">
       
@@ -309,7 +389,6 @@ function Audit({ schoolId, passcode, onLogout }) {
       </div>
 
       <div className="border-4 border-gray-200 rounded-lg overflow-hidden bg-black relative shadow-inner">
-        {/* The video element is hidden on capture to preserve layout, not unmounted */}
         <video ref={videoRef} autoPlay playsInline muted className={`w-full h-64 object-cover ${photoData ? 'hidden' : 'block'}`} />
         {photoData && <img src={photoData} alt="Captured" className="w-full h-64 object-cover block" />}
       </div>
@@ -326,19 +405,28 @@ function Audit({ schoolId, passcode, onLogout }) {
             onChange={(e) => setRemarks(e.target.value)}
           />
           
-          <div className="flex items-center space-x-3 bg-gray-50 p-3 rounded-md border border-gray-200 shadow-sm">
-             <button 
-                onClick={handleAudioRecord} 
-                className={`p-3 rounded-full flex-shrink-0 transition-colors ${isRecording ? 'bg-red-500 text-white animate-pulse shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-             >
-                🎤
-             </button>
-             <div className="text-sm font-medium text-gray-600 flex-1">
-                {isRecording ? "Recording audio note..." : audioBase64 ? "Audio note attached." : "Tap to record a voice note."}
+          <div className="flex flex-col space-y-2 bg-gray-50 p-3 rounded-md border border-gray-200 shadow-sm">
+             <div className="flex items-center space-x-3">
+               <button 
+                  onClick={handleAudioRecord} 
+                  className={`p-3 rounded-full flex-shrink-0 transition-colors ${isRecording ? 'bg-red-500 text-white animate-pulse shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+               >
+                  🎤
+               </button>
+               <div className="text-sm font-medium text-gray-600 flex-1">
+                  {isRecording ? "Recording audio note..." : audioBase64 ? "Audio note attached." : "Tap to record a voice note."}
+               </div>
+               {audioBase64 && !isRecording && (
+                  <button onClick={() => setAudioBase64(null)} className="text-red-500 text-sm font-bold bg-red-50 px-2 py-1 rounded hover:bg-red-100 transition">Remove</button>
+               )}
              </div>
-             {audioBase64 && !isRecording && (
-                <button onClick={() => setAudioBase64(null)} className="text-red-500 text-sm font-bold bg-red-50 px-2 py-1 rounded hover:bg-red-100 transition">Remove</button>
-             )}
+             
+             <canvas 
+               ref={audioCanvasRef} 
+               width="300" 
+               height="40" 
+               className={`w-full rounded border border-gray-200 bg-gray-100 shadow-inner ${isRecording ? 'block' : 'hidden'}`}
+             ></canvas>
           </div>
         </div>
       )}
@@ -366,6 +454,8 @@ function Audit({ schoolId, passcode, onLogout }) {
         <div className="flex space-x-3 pt-2">
           <button 
             onClick={() => { 
+              // FIX: Safely kill audio operations when choosing to retake
+              stopAnyActiveAudio();
               setPhotoData(null); 
               setAudioBase64(null); 
               startCamera(); 

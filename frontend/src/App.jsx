@@ -56,8 +56,9 @@ function App() {
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         try {
+          // FIX: Changed single quotes to backticks, and school_name to name
           const response = await axios.post(`${backendUrl}/api/register`, {
-            school_name: schoolName,
+            name: schoolName, 
             pincode: pincode,
             lat: position.coords.latitude,
             lng: position.coords.longitude
