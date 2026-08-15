@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
 import core 
+import requests
 
 load_dotenv()
 app = FastAPI(title="Washroom Portal API")
@@ -37,6 +38,8 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     school_id: str
     passcode: str
+    lat: float
+    lng: float
 
 class AuditRequest(BaseModel):
     school_id: str
@@ -53,8 +56,26 @@ def register_school(req: RegisterRequest):
     if not req.pincode.isdigit() or len(req.pincode) != 6:
         raise HTTPException(status_code=400, detail="Invalid Pincode format")
         
+    # --- RESTORED LOGIC: Check if GPS matches the Pincode ---
+    try:
+        headers = {'User-Agent': 'WashroomMVP/1.0'}
+        geo_url = f"https://nominatim.openstreetmap.org/reverse?lat={req.lat}&lon={req.lng}&format=json"
+        geo_res = requests.get(geo_url, headers=headers, timeout=5).json()
+        fetched_pincode = geo_res.get("address", {}).get("postcode", "")
+        
+        # STRICT RULE 1: If API can't find a pincode for this location, BLOCK THEM.
+        if not fetched_pincode:
+            raise HTTPException(status_code=403, detail="Strict GPS Check: Could not determine pincode for your location.")
+            
+        # STRICT RULE 2: If API finds a pincode but it doesn't match, BLOCK THEM.
+        if fetched_pincode != req.pincode:
+            raise HTTPException(status_code=403, detail=f"GPS Mismatch: You are physically in {fetched_pincode}, not {req.pincode}")
+            
+    except requests.exceptions.RequestException:
+        raise HTTPException(status_code=500, detail="Location verification service is currently down.")
+    # ------------------------------------------------------
+
     state_code, dist_code, taluka_code, loc_name = core.parse_pincode(req.pincode)
-    
     try:
         db_config = get_db_config()
         
@@ -73,9 +94,17 @@ def register_school(req: RegisterRequest):
 
 @app.post("/api/verify")
 def verify_login(req: LoginRequest):
-    if core.verify_school(req.school_id.upper(), req.passcode, get_db_config()):
-        return {"status": "success"}
-    raise HTTPException(status_code=401, detail="Invalid Credentials")
+    db_config = get_db_config()
+    school = core.get_school_details(req.school_id.upper(), req.passcode, db_config)
+    
+    if not school:
+        raise HTTPException(status_code=401, detail="Invalid Credentials")
+        
+    distance = core.get_distance(school['lat'], school['lng'], req.lat, req.lng)
+    if distance > 200:
+        raise HTTPException(status_code=403, detail=f"Login Denied: You are {int(distance)}m away from the registered school location.")
+        
+    return {"status": "success"}
 
 @app.post("/api/audit")
 async def submit_audit(req: AuditRequest):

@@ -23,37 +23,53 @@ function App() {
   };
 
   const extractErrorMsg = (error, defaultMsg) => {
-      const detail = error.response?.data?.detail;
-      if (!detail) return defaultMsg;
-      if (typeof detail === 'string') return detail;
-      if (Array.isArray(detail)) {
-        // This will extract the EXACT field name FastAPI is looking for
-        return detail.map(err => {
-          const fieldName = err.loc && err.loc.length > 1 ? err.loc[1] : 'Unknown field';
-          return `'${fieldName}' is required by your backend.`;
-        }).join(' | ');
-      }
-      return defaultMsg;
-    };
+    const detail = error.response?.data?.detail;
+    if (!detail) return defaultMsg;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      // This will extract the EXACT field name FastAPI is looking for
+      return detail.map(err => {
+        const fieldName = err.loc && err.loc.length > 1 ? err.loc[1] : 'Unknown field';
+        return `'${fieldName}' is required by your backend.`;
+      }).join(' | ');
+    }
+    return defaultMsg;
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
-    setMessage({ text: "", type: "" });
+    setMessage({ text: "Verifying credentials and location...", type: "success" });
 
-    try {
-      await axios.post(`${backendUrl}/api/verify`, {
-        school_id: schoolId,
-        passcode: passcode
-      });
-      setIsAuthenticated(true);
-    } catch (error) {
-      setMessage({ 
-        text: extractErrorMsg(error, "Login failed. Check your ID and Passcode."), 
-        type: "error" 
-      });
+    if (!navigator.geolocation) {
+      setMessage({ text: "Geolocation is not supported by your browser.", type: "error" });
+      setLoading(false);
+      return;
     }
-    setLoading(false);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          await axios.post(`${backendUrl}/api/verify`, {
+            school_id: schoolId,
+            passcode: passcode,
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+          setIsAuthenticated(true);
+        } catch (error) {
+          setMessage({ 
+            text: extractErrorMsg(error, "Login failed. Check ID, Passcode, and Location."), 
+            type: "error" 
+          });
+        }
+        setLoading(false);
+      },
+      (error) => {
+        setMessage({ text: "GPS access denied. Required for login.", type: "error" });
+        setLoading(false);
+      }
+    );
   };
 
   const handleRegister = async (e) => {
