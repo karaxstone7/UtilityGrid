@@ -3,6 +3,7 @@ import json
 import io
 import math
 import random
+import traceback
 from datetime import datetime
 from typing import Dict, Tuple, Optional
 
@@ -41,8 +42,8 @@ def parse_pincode(pincode: str) -> Tuple[str, str, str, str]:
                 dist_code = "GHZ" if dist_name == "GHAZIABAD" else dist_name[:3]
                 
                 location_name = f"{po['District']}, {po['State']}"
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"\n[Warning] Postal Pincode API failed for {pincode}: {e}")
         
     return state_code, dist_code, taluka_code, location_name
 
@@ -62,9 +63,11 @@ def get_next_sequential_id(state_code: str, dist_code: str, taluka_code: str, db
     try:
         # col_values(1) gets all existing School IDs from Column A
         existing_ids = sheet.col_values(1)
-    except Exception:
-        existing_ids = []
-        
+    except Exception as e:
+        print("\n[Error] Failed to read existing School IDs from Sheets:")
+        traceback.print_exc()
+        raise Exception("Database connection failed while fetching IDs.")
+    
     # Default to 1 less than the start, so the first school gets sequence ending in '000'
     max_in_series = series_start - 1 
     
@@ -141,7 +144,9 @@ def analyze_image(image_bytes: bytes, remarks: str, audio_bytes: bytes, audio_mi
         text = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(text)
     except Exception as e:
-        print(f"AI API Error: {e}")
+        print("\n=== AI ANALYSIS ERROR ===")
+        traceback.print_exc()
+        print("=========================\n")
         return None
 
 def calculate_final_score(ai_result: Dict) -> Dict:
@@ -199,14 +204,25 @@ def get_school_details(school_id: str, passcode: str, db_config: dict) -> Option
     creds = get_google_credentials(db_config["gcp_credentials"])
     client = gspread.authorize(creds)
     sheet = client.open_by_key(db_config["sheet_id"]).worksheet("Schools")
+    
     try:
+        # In newer gspread, this raises a ValueError if the ID is not found
         cell = sheet.find(school_id)
+        if not cell:
+            return None
         row_values = sheet.row_values(cell.row)
         if len(row_values) >= 5 and str(row_values[4]) == str(passcode):
             return {"id": row_values[0], "name": row_values[1], "lat": float(row_values[2]), "lng": float(row_values[3])}
         return None
-    except Exception:
+        
+    except ValueError:
+        # Expected behavior: The school ID simply doesn't exist in the sheet
         return None
+    except Exception as e:
+        # Unexpected behavior: Google API crashed, network down, etc.
+        print("\n[Error] Database error while fetching school details:")
+        traceback.print_exc()
+        raise Exception("Database connection failed. Please try again later.")
 
 def register_school_db(school_id: str, name: str, lat: float, lng: float, db_config: dict) -> str:
     passcode = str(random.randint(1000, 9999))

@@ -23,11 +23,15 @@ function App() {
   };
 
   const extractErrorMsg = (error, defaultMsg) => {
+    // --- ADDED: Catch if the Python server is off or unreachable ---
+    if (error.code === 'ERR_NETWORK') {
+      return "Cannot connect to the server. Please check your internet or ensure the backend is running.";
+    }
+
     const detail = error.response?.data?.detail;
     if (!detail) return defaultMsg;
     if (typeof detail === 'string') return detail;
     if (Array.isArray(detail)) {
-      // This will extract the EXACT field name FastAPI is looking for
       return detail.map(err => {
         const fieldName = err.loc && err.loc.length > 1 ? err.loc[1] : 'Unknown field';
         return `'${fieldName}' is required by your backend.`;
@@ -66,9 +70,17 @@ function App() {
         setLoading(false);
       },
       (error) => {
-        setMessage({ text: "GPS access denied. Required for login.", type: "error" });
+        // --- ADDED: Detailed GPS error reporting ---
+        let msg = "GPS access denied or failed.";
+        if (error.code === 1) msg = "Please allow location permissions in your browser to log in.";
+        if (error.code === 2) msg = "GPS position unavailable. Please ensure your device location is on.";
+        if (error.code === 3) msg = "GPS request timed out. Please try again.";
+        
+        setMessage({ text: msg, type: "error" });
         setLoading(false);
-      }
+      },
+      // --- ADDED: Force high accuracy and 10-second timeout ---
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 } 
     );
   };
 
@@ -107,9 +119,17 @@ function App() {
         setLoading(false);
       },
       (error) => {
-        setMessage({ text: "GPS access denied. Required for registration.", type: "error" });
+        // --- ADDED: Detailed GPS error reporting ---
+        let msg = "GPS access denied or failed.";
+        if (error.code === 1) msg = "Please allow location permissions in your browser to register.";
+        if (error.code === 2) msg = "GPS position unavailable. Please ensure your device location is on.";
+        if (error.code === 3) msg = "GPS request timed out. Please try again.";
+        
+        setMessage({ text: msg, type: "error" });
         setLoading(false);
-      }
+      },
+      // --- ADDED: Force high accuracy and 10-second timeout ---
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   };
 

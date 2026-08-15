@@ -9,11 +9,10 @@ function Audit({ schoolId, passcode, onLogout }) {
   const streamRef = useRef(null); 
   const isCameraIntended = useRef(false); 
   
-  
   const audioCanvasRef = useRef(null);
   const audioCtxRef = useRef(null);
   const animationRef = useRef(null);
-  const audioStreamRef = useRef(null); // Add this new ref to track the mic hardware
+  const audioStreamRef = useRef(null);
   
   const [mode, setMode] = useState('capture');
   
@@ -22,6 +21,7 @@ function Audit({ schoolId, passcode, onLogout }) {
   const [location, setLocation] = useState(null);
   const [remarks, setRemarks] = useState("");
   const [status, setStatus] = useState("Initializing sensors...");
+  const [errorMsg, setErrorMsg] = useState(null); // --- ADDED: Dedicated error state
   
   const [isRecording, setIsRecording] = useState(false);
   const [audioBase64, setAudioBase64] = useState(null);
@@ -32,8 +32,16 @@ function Audit({ schoolId, passcode, onLogout }) {
   
   const MAX_UNITS = 10;
 
+  // --- ADDED: Reusable error extractor for network/backend issues ---
+  const extractErrorMsg = (error, defaultMsg) => {
+    if (error.code === 'ERR_NETWORK') return "Cannot connect to the server. Check your internet.";
+    const detail = error.response?.data?.detail;
+    return typeof detail === 'string' ? detail : defaultMsg;
+  };
+
   const startCamera = () => {
     isCameraIntended.current = true;
+    setErrorMsg(null);
     
     if (streamRef.current) {
         stopCamera(); 
@@ -47,7 +55,6 @@ function Audit({ schoolId, passcode, onLogout }) {
            return;
         }
         
-        // --- THE FIX: Kill any ghost streams that resolved while we were waiting ---
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
         }
@@ -58,7 +65,11 @@ function Audit({ schoolId, passcode, onLogout }) {
         }
         setStatus("Ready to scan.");
       })
-      .catch((err) => setStatus("Error: Camera/Mic access denied."));
+      .catch((err) => {
+        // --- IMPROVED: Clear camera errors ---
+        setStatus("Hardware Error.");
+        setErrorMsg("Camera or Microphone access denied. Please allow permissions in your browser settings and refresh.");
+      });
   };
 
   const stopCamera = () => {
@@ -72,10 +83,11 @@ function Audit({ schoolId, passcode, onLogout }) {
       }
     }
   };
+  
   const pauseCamera = () => {
     if (streamRef.current) {
       streamRef.current.getVideoTracks().forEach(track => {
-        track.enabled = false; // Pauses the stream, outputs black frames
+        track.enabled = false;
       });
     }
   };
@@ -83,16 +95,30 @@ function Audit({ schoolId, passcode, onLogout }) {
   const resumeCamera = () => {
     if (streamRef.current) {
       streamRef.current.getVideoTracks().forEach(track => {
-        track.enabled = true; // Instantly resumes the stream
+        track.enabled = true;
       });
     }
   };
+
   useEffect(() => {
     if (navigator.geolocation) {
+      // --- IMPROVED: High accuracy GPS with strict timeout rules ---
       navigator.geolocation.getCurrentPosition(
-        (pos) => setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        (err) => setStatus("Error: GPS required.")
+        (pos) => {
+          setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setErrorMsg(null);
+        },
+        (err) => {
+          let msg = "GPS access denied.";
+          if (err.code === 2) msg = "GPS position unavailable. Turn on device location.";
+          if (err.code === 3) msg = "GPS request timed out.";
+          setErrorMsg(msg + " Refresh the page to try again.");
+          setStatus("Waiting for GPS...");
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
+    } else {
+      setErrorMsg("Geolocation is not supported by your browser.");
     }
     startCamera();
     
@@ -115,7 +141,6 @@ function Audit({ schoolId, passcode, onLogout }) {
       setIsRecording(false);
     }
     
-    // --- THE FIX: Force kill the microphone track directly ---
     if (audioStreamRef.current) {
       audioStreamRef.current.getTracks().forEach(track => track.stop());
       audioStreamRef.current = null;
@@ -162,6 +187,7 @@ function Audit({ schoolId, passcode, onLogout }) {
   };
 
   const handleAudioRecord = async () => {
+    setErrorMsg(null);
     if (isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -173,7 +199,7 @@ function Audit({ schoolId, passcode, onLogout }) {
     } else {
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioStreamRef.current = audioStream; // Add this line
+        audioStreamRef.current = audioStream; 
         const recorder = new MediaRecorder(audioStream);
         const chunks = [];
         
@@ -206,13 +232,15 @@ function Audit({ schoolId, passcode, onLogout }) {
         mediaRecorderRef.current = recorder;
         setIsRecording(true);
       } catch (err) {
+        // --- IMPROVED: Replaced raw alert() with UI banner ---
         console.error("Mic access failed:", err);
-        alert("Could not access the microphone. Please check your browser permissions.");
+        setErrorMsg("Could not access the microphone. Please check your browser permissions.");
       }
     }
   };
 
   const takePhoto = () => {
+    setErrorMsg(null);
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
@@ -222,7 +250,6 @@ function Audit({ schoolId, passcode, onLogout }) {
     canvas.getContext('2d').drawImage(video, 0, 0);
     setPhotoData(canvas.toDataURL('image/png'));
     
-    // stopCamera();
     pauseCamera();
   };
 
@@ -242,7 +269,6 @@ function Audit({ schoolId, passcode, onLogout }) {
       const nextUnit = parseInt(unit) + 1;
       setUnit(nextUnit <= MAX_UNITS ? nextUnit.toString() : MAX_UNITS.toString()); 
       setStatus(`Unit saved to batch. Ready for next unit.`);
-      // startCamera();
       resumeCamera();
     }
   };
@@ -250,13 +276,16 @@ function Audit({ schoolId, passcode, onLogout }) {
   const submitBatch = async () => {
     stopCamera(); 
     setMode('analyzing');
+    setErrorMsg(null);
     
     const processedReports = [];
+    const failedUnits = [];
     
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
       setStatus(`Analyzing Unit ${item.unit} (${i + 1}/${batch.length})...`);
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+      
       try {
         const response = await axios.post(`${backendUrl}/api/audit`, {
           school_id: schoolId,
@@ -270,8 +299,14 @@ function Audit({ schoolId, passcode, onLogout }) {
         });
         processedReports.push(response.data);
       } catch (error) {
-        alert(`Failed to upload Unit ${item.unit}.`);
+        // --- IMPROVED: Catch exact failure reason per unit instead of failing silently ---
+        const specificError = extractErrorMsg(error, "Analysis failed.");
+        failedUnits.push(`Unit ${item.unit}: ${specificError}`);
       }
+    }
+    
+    if (failedUnits.length > 0) {
+       setErrorMsg(`Some units failed to process:\n${failedUnits.join('\n')}`);
     }
     
     setReports(processedReports);
@@ -283,6 +318,7 @@ function Audit({ schoolId, passcode, onLogout }) {
     setBatch([]);
     setReports([]);
     setUnit("1");
+    setErrorMsg(null);
     setMode('capture');
     startCamera();
   };
@@ -290,6 +326,14 @@ function Audit({ schoolId, passcode, onLogout }) {
   if (mode === 'reports') {
     return (
       <div className="p-6 max-w-4xl mx-auto space-y-8">
+        
+        {/* --- ADDED: Error banner for failed uploads on the report screen --- */}
+        {errorMsg && (
+          <div className="bg-red-50 text-red-800 p-4 rounded-lg border border-red-200 shadow-sm whitespace-pre-wrap font-medium">
+            {errorMsg}
+          </div>
+        )}
+
         <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow">
           <h2 className="text-2xl font-extrabold text-gray-800">Batch Inspection Results</h2>
           
@@ -413,9 +457,16 @@ function Audit({ schoolId, passcode, onLogout }) {
         </div>
       </div>
       
+      {/* --- ADDED: Global Error Banner for capture screen --- */}
+      {errorMsg && (
+        <div className="bg-red-50 text-red-800 p-3 rounded text-sm font-medium border border-red-200 shadow-sm flex justify-between items-center">
+          <span>{errorMsg}</span>
+          <button onClick={() => setErrorMsg(null)} className="ml-2 text-red-500 hover:text-red-900 text-xl font-bold">&times;</button>
+        </div>
+      )}
+
       <p className="text-sm font-medium text-blue-600">{status}</p>
 
-      {/* CONDITIONAL RENDER: If Batch is full, show analyze screen instead of camera */}
       {batch.length >= MAX_UNITS ? (
         <div className="py-12 space-y-6 text-center animate-fade-in">
           <div className="text-6xl">✅</div>
@@ -512,6 +563,7 @@ function Audit({ schoolId, passcode, onLogout }) {
                   stopAnyActiveAudio();
                   setPhotoData(null); 
                   setAudioBase64(null); 
+                  setErrorMsg(null);
                   resumeCamera(); 
                 }} 
                 className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-lg font-bold transition shadow-md"
