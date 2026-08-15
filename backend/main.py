@@ -77,17 +77,17 @@ def register_school(req: RegisterRequest):
         raise HTTPException(status_code=400, detail="Invalid Pincode format. Must be 6 digits.")
         
     # --- Check if GPS matches the Pincode ---
-    try:
-        headers = {'User-Agent': 'WashroomMVP/1.0'}
-        geo_url = f"https://nominatim.openstreetmap.org/reverse?lat={req.lat}&lon={req.lng}&format=json"
-        geo_res = requests.get(geo_url, headers=headers, timeout=5).json()
-        fetched_pincode = geo_res.get("address", {}).get("postcode", "")
+    # try:
+    #     headers = {'User-Agent': 'WashroomMVP/1.0'}
+    #     geo_url = f"https://nominatim.openstreetmap.org/reverse?lat={req.lat}&lon={req.lng}&format=json"
+    #     geo_res = requests.get(geo_url, headers=headers, timeout=5).json()
+    #     fetched_pincode = geo_res.get("address", {}).get("postcode", "")
         
-        if fetched_pincode and fetched_pincode != req.pincode:
-            raise HTTPException(status_code=403, detail=f"GPS Mismatch: You are physically in pincode {fetched_pincode}, not {req.pincode}")
-    except requests.exceptions.RequestException as e:
-        print(f"[Warning] OpenStreetMap API failed during registration: {e}")
-        # We don't raise an error here to prevent blocking the user if the free API is down.
+    #     if fetched_pincode and fetched_pincode != req.pincode:
+    #         raise HTTPException(status_code=403, detail=f"GPS Mismatch: You are physically in pincode {fetched_pincode}, not {req.pincode}")
+    # except requests.exceptions.RequestException as e:
+    #     print(f"[Warning] OpenStreetMap API failed during registration: {e}")
+    #     # We don't raise an error here to prevent blocking the user if the free API is down.
     
     try:
         state_code, dist_code, taluka_code, loc_name = core.parse_pincode(req.pincode)
