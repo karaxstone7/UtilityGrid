@@ -63,17 +63,12 @@ def register_school(req: RegisterRequest):
         geo_res = requests.get(geo_url, headers=headers, timeout=5).json()
         fetched_pincode = geo_res.get("address", {}).get("postcode", "")
         
-        # STRICT RULE 1: If API can't find a pincode for this location, BLOCK THEM.
-        if not fetched_pincode:
-            raise HTTPException(status_code=403, detail="Strict GPS Check: Could not determine pincode for your location.")
-            
-        # STRICT RULE 2: If API finds a pincode but it doesn't match, BLOCK THEM.
-        if fetched_pincode != req.pincode:
-            raise HTTPException(status_code=403, detail=f"GPS Mismatch: You are physically in {fetched_pincode}, not {req.pincode}")
-            
+        # If the API found a pincode, check if it matches what the user typed
+        if fetched_pincode and fetched_pincode != req.pincode:
+            raise HTTPException(status_code=403, detail=f"GPS Mismatch: You are physically in pincode {fetched_pincode}, not {req.pincode}")
     except requests.exceptions.RequestException:
-        raise HTTPException(status_code=500, detail="Location verification service is currently down.")
-    # ------------------------------------------------------
+        pass # Fail safely if the external geocoding API is down
+    # --------------------------------------------------------
 
     state_code, dist_code, taluka_code, loc_name = core.parse_pincode(req.pincode)
     try:
